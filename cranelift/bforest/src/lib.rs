@@ -39,7 +39,7 @@ extern crate alloc;
 extern crate cranelift_entity as entity;
 use crate::entity::packed_option;
 
-use core::borrow::BorrowMut;
+use core::borrow::{Borrow, BorrowMut};
 use core::cmp::Ordering;
 
 mod map;
@@ -68,14 +68,16 @@ const MAX_PATH: usize = 16;
 ///
 /// Keys don't need to implement `Ord`. They are compared using a comparator object which
 /// provides a context for comparison.
-pub trait Comparator<K>
+pub trait Comparator<K, Q>
 where
     K: Copy,
+    K: Borrow<Q>,
+    Q: ?Sized
 {
     /// Compare keys `a` and `b`.
     ///
     /// This relation must provide a total ordering or the key space.
-    fn cmp(&self, a: K, b: K) -> Ordering;
+    fn cmp(&self, a: K, b: &Q) -> Ordering;
 
     /// Binary search for `k` in an ordered slice.
     ///
@@ -83,18 +85,20 @@ where
     ///
     /// Returns `Ok(idx)` if `k` was found in the slice or `Err(idx)` with the position where it
     /// should be inserted to preserve the ordering.
-    fn search(&self, k: K, s: &[K]) -> Result<usize, usize> {
+    fn search(&self, k: &Q, s: &[K]) -> Result<usize, usize> {
         s.binary_search_by(|x| self.cmp(*x, k))
     }
 }
 
 /// Trivial comparator that doesn't actually provide any context.
-impl<K> Comparator<K> for ()
+impl<K, Q> Comparator<K, Q> for ()
 where
-    K: Copy + Ord,
+    K: Copy,
+    K: Borrow<Q>,
+    Q: Ord + ?Sized
 {
-    fn cmp(&self, a: K, b: K) -> Ordering {
-        a.cmp(&b)
+    fn cmp(&self, a: K, b: &Q) -> Ordering {
+        a.borrow().cmp(b)
     }
 }
 
@@ -161,9 +165,9 @@ mod tests {
         let block4 = Block::new(4);
         let vals = [block1, block2, block4];
         let comp = ();
-        assert_eq!(comp.search(block1, &vals), Ok(0));
-        assert_eq!(comp.search(block3, &vals), Err(2));
-        assert_eq!(comp.search(block4, &vals), Ok(2));
+        assert_eq!(comp.search(&block1, &vals), Ok(0));
+        assert_eq!(comp.search(&block3, &vals), Err(2));
+        assert_eq!(comp.search(&block4, &vals), Ok(2));
     }
 
     #[test]

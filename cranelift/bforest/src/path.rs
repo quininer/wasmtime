@@ -44,13 +44,18 @@ impl<F: Forest> Path<F> {
     /// - A key between the stored keys of adjacent leaf nodes returns a path to one beyond the
     ///   last entry of the first of the leaf nodes.
     ///
-    pub fn find(
+    pub fn find<Q>(
         &mut self,
-        key: F::Key,
+        key: &Q,
         root: Node,
         pool: &NodePool<F>,
-        comp: &dyn Comparator<F::Key>,
-    ) -> Option<F::Value> {
+        comp: &dyn Comparator<F::Key, Q>,
+    )
+        -> Option<F::Value>
+    where
+        F::Key: Borrow<Q>,
+        Q: ?Sized
+    {
         let mut node = root;
         for level in 0.. {
             self.size = level + 1;
@@ -710,9 +715,9 @@ mod tests {
 
     struct TC();
 
-    impl Comparator<i32> for TC {
-        fn cmp(&self, a: i32, b: i32) -> Ordering {
-            a.cmp(&b)
+    impl Comparator<i32, i32> for TC {
+        fn cmp(&self, a: i32, b: &i32) -> Ordering {
+            a.cmp(b)
         }
     }
 
@@ -742,19 +747,19 @@ mod tests {
         let comp = TC();
 
         // Search for key less than stored key.
-        assert_eq!(p.find(5, root, &pool, &comp), None);
+        assert_eq!(p.find(&5, root, &pool, &comp), None);
         assert_eq!(p.size, 1);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 0);
 
         // Search for stored key.
-        assert_eq!(p.find(10, root, &pool, &comp), Some('a'));
+        assert_eq!(p.find(&10, root, &pool, &comp), Some('a'));
         assert_eq!(p.size, 1);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 0);
 
         // Search for key greater than stored key.
-        assert_eq!(p.find(15, root, &pool, &comp), None);
+        assert_eq!(p.find(&15, root, &pool, &comp), None);
         assert_eq!(p.size, 1);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 1);
@@ -774,13 +779,13 @@ mod tests {
         }
 
         // Search for key between stored keys.
-        assert_eq!(p.find(15, root, &pool, &comp), None);
+        assert_eq!(p.find(&15, root, &pool, &comp), None);
         assert_eq!(p.size, 1);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 1);
 
         // Search for key greater than stored keys.
-        assert_eq!(p.find(25, root, &pool, &comp), None);
+        assert_eq!(p.find(&25, root, &pool, &comp), None);
         assert_eq!(p.size, 1);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 2);
@@ -797,14 +802,14 @@ mod tests {
         let comp = TC();
 
         // Search for key less than stored keys.
-        assert_eq!(p.find(5, root, &pool, &comp), None);
+        assert_eq!(p.find(&5, root, &pool, &comp), None);
         assert_eq!(p.size, 2);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 0);
         assert_eq!(p.node[1], leaf1);
         assert_eq!(p.entry[1], 0);
 
-        assert_eq!(p.find(10, root, &pool, &comp), Some('a'));
+        assert_eq!(p.find(&10, root, &pool, &comp), Some('a'));
         assert_eq!(p.size, 2);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 0);
@@ -812,21 +817,21 @@ mod tests {
         assert_eq!(p.entry[1], 0);
 
         // Midway between the two leaf nodes.
-        assert_eq!(p.find(15, root, &pool, &comp), None);
+        assert_eq!(p.find(&15, root, &pool, &comp), None);
         assert_eq!(p.size, 2);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 0);
         assert_eq!(p.node[1], leaf1);
         assert_eq!(p.entry[1], 1);
 
-        assert_eq!(p.find(20, root, &pool, &comp), Some('b'));
+        assert_eq!(p.find(&20, root, &pool, &comp), Some('b'));
         assert_eq!(p.size, 2);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 1);
         assert_eq!(p.node[1], leaf2);
         assert_eq!(p.entry[1], 0);
 
-        assert_eq!(p.find(25, root, &pool, &comp), None);
+        assert_eq!(p.find(&25, root, &pool, &comp), None);
         assert_eq!(p.size, 2);
         assert_eq!(p.node[0], root);
         assert_eq!(p.entry[0], 1);

@@ -6,6 +6,8 @@ use super::{Forest, Node, NodeData};
 use crate::entity::PrimaryMap;
 #[cfg(test)]
 use core::fmt;
+#[cfg(test)]
+use core::borrow::Borrow;
 use core::ops::{Index, IndexMut};
 
 /// A pool of nodes, including a free list.
@@ -78,14 +80,14 @@ impl<F: Forest> NodePool<F> {
 #[cfg(test)]
 impl<F: Forest> NodePool<F> {
     /// Verify the consistency of the tree rooted at `node`.
-    pub fn verify_tree<C: Comparator<F::Key>>(&self, node: Node, comp: &C)
+    pub fn verify_tree<Q, C: Comparator<F::Key, Q>>(&self, node: Node, comp: &C)
     where
         NodeData<F>: fmt::Display,
-        F::Key: fmt::Display,
+        F::Key: fmt::Display + Borrow<Q>,
+        Q: ?Sized
     {
         use crate::entity::EntitySet;
         use alloc::vec::Vec;
-        use core::borrow::Borrow;
         use core::cmp::Ordering;
 
         // The root node can't be an inner node with just a single sub-tree. It should have been
@@ -139,7 +141,7 @@ impl<F: Forest> NodePool<F> {
                         // Check that keys are strictly monotonic.
                         if let (Some(a), Some(b)) = (lower, upper) {
                             assert_eq!(
-                                comp.cmp(a, b),
+                                comp.cmp(a, b.borrow()),
                                 Ordering::Less,
                                 "Key order {} < {} failed in {}: {}",
                                 a,
@@ -185,7 +187,7 @@ impl<F: Forest> NodePool<F> {
                                 Ordering::Less
                             };
                             assert_eq!(
-                                comp.cmp(a, b),
+                                comp.cmp(a, b.borrow()),
                                 wanted,
                                 "Key order for {} - {} failed in {}: {}",
                                 a,

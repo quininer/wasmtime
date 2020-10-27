@@ -6,6 +6,7 @@ use crate::packed_option::PackedOption;
 use alloc::string::String;
 #[cfg(test)]
 use core::fmt;
+use core::borrow::Borrow;
 use core::marker::PhantomData;
 
 /// Tag type defining forest types for a map.
@@ -96,7 +97,13 @@ where
     }
 
     /// Get the value stored for `key`.
-    pub fn get<C: Comparator<K>>(&self, key: K, forest: &MapForest<K, V>, comp: &C) -> Option<V> {
+    pub fn get<Q, C>(&self, key: &Q, forest: &MapForest<K, V>, comp: &C)
+        -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         self.root
             .expand()
             .and_then(|root| Path::default().find(key, root, &forest.nodes, comp))
@@ -109,7 +116,7 @@ where
     /// Otherwise, return the last key-value pair with a key that is less than or equal to `key`.
     ///
     /// If no stored keys are less than or equal to `key`, return `None`.
-    pub fn get_or_less<C: Comparator<K>>(
+    pub fn get_or_less<C: Comparator<K, K>>(
         &self,
         key: K,
         forest: &MapForest<K, V>,
@@ -117,7 +124,7 @@ where
     ) -> Option<(K, V)> {
         self.root.expand().and_then(|root| {
             let mut path = Path::default();
-            match path.find(key, root, &forest.nodes, comp) {
+            match path.find(&key, root, &forest.nodes, comp) {
                 Some(v) => Some((key, v)),
                 None => path.prev(root, &forest.nodes),
             }
@@ -125,7 +132,7 @@ where
     }
 
     /// Insert `key, value` into the map and return the old value stored for `key`, if any.
-    pub fn insert<C: Comparator<K>>(
+    pub fn insert<C: Comparator<K, K>>(
         &mut self,
         key: K,
         value: V,
@@ -136,14 +143,14 @@ where
     }
 
     /// Remove `key` from the map and return the removed value for `key`, if any.
-    pub fn remove<C: Comparator<K>>(
+    pub fn remove<C: Comparator<K, K>>(
         &mut self,
         key: K,
         forest: &mut MapForest<K, V>,
         comp: &C,
     ) -> Option<V> {
         let mut c = self.cursor(forest, comp);
-        if c.goto(key).is_some() {
+        if c.goto(&key).is_some() {
             c.remove()
         } else {
             None
@@ -185,11 +192,16 @@ where
 
     /// Create a cursor for navigating this map. The cursor is initially positioned off the end of
     /// the map.
-    pub fn cursor<'a, C: Comparator<K>>(
+    pub fn cursor<'a, Q, C>(
         &'a mut self,
         forest: &'a mut MapForest<K, V>,
         comp: &'a C,
-    ) -> MapCursor<'a, K, V, C> {
+    ) -> MapCursor<'a, K, V, C, Q>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         MapCursor::new(self, forest, comp)
     }
 
@@ -220,8 +232,10 @@ where
     V: Copy,
 {
     /// Verify consistency.
-    fn verify<C: Comparator<K>>(&self, forest: &MapForest<K, V>, comp: &C)
+    fn verify<Q, C: Comparator<K, Q>>(&self, forest: &MapForest<K, V>, comp: &C)
     where
+        K: Borrow<Q>,
+        Q: ?Sized,
         NodeData<MapTypes<K, V>>: fmt::Display,
     {
         if let Some(root) = self.root.expand() {
@@ -230,7 +244,13 @@ where
     }
 
     /// Get a text version of the path to `key`.
-    fn tpath<C: Comparator<K>>(&self, key: K, forest: &MapForest<K, V>, comp: &C) -> String {
+    fn tpath<Q, C>(&self, key: &Q, forest: &MapForest<K, V>, comp: &C)
+        -> String
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         use alloc::string::ToString;
         match self.root.expand() {
             None => "map(empty)".to_string(),
@@ -247,23 +267,26 @@ where
 ///
 /// A cursor always points at a key-value pair in the map, or "off the end" which is a position
 /// after the last entry in the map.
-pub struct MapCursor<'a, K, V, C>
+pub struct MapCursor<'a, K, V, C, Q>
 where
-    K: 'a + Copy,
+    K: 'a + Copy + Borrow<Q>,
+    Q: ?Sized,
     V: 'a + Copy,
-    C: 'a + Comparator<K>,
+    C: 'a + Comparator<K, Q>,
 {
     root: &'a mut PackedOption<Node>,
     pool: &'a mut NodePool<MapTypes<K, V>>,
     comp: &'a C,
     path: Path<MapTypes<K, V>>,
+    _unused: PhantomData<Q>
 }
 
-impl<'a, K, V, C> MapCursor<'a, K, V, C>
+impl<'a, K, V, C, Q> MapCursor<'a, K, V, C, Q>
 where
-    K: Copy,
+    K: Copy + Borrow<Q>,
+    Q: ?Sized,
     V: Copy,
-    C: Comparator<K>,
+    C: Comparator<K, Q>,
 {
     /// Create a cursor with a default (off-the-end) location.
     fn new(container: &'a mut Map<K, V>, forest: &'a mut MapForest<K, V>, comp: &'a C) -> Self {
@@ -272,6 +295,7 @@ where
             pool: &mut forest.nodes,
             comp,
             path: Path::default(),
+            _unused: PhantomData
         }
     }
 
@@ -325,7 +349,7 @@ where
     ///
     /// If `key` is not in the set, place the cursor at the next larger element (or the end) and
     /// return `None`.
-    pub fn goto(&mut self, elem: K) -> Option<V> {
+    pub fn goto(&mut self, elem: &Q) -> Option<V> {
         self.root.expand().and_then(|root| {
             let v = self.path.find(elem, root, self.pool, self.comp);
             if v.is_none() {
@@ -355,7 +379,7 @@ where
             }
             Some(root) => {
                 // TODO: Optimize the case where `self.path` is already at the correct insert pos.
-                let old = self.path.find(key, root, self.pool, self.comp);
+                let old = self.path.find(key.borrow(), root, self.pool, self.comp);
                 if old.is_some() {
                     *self.path.value_mut(self.pool) = value;
                 } else {
@@ -407,11 +431,12 @@ where
 }
 
 #[cfg(test)]
-impl<'a, K, V, C> MapCursor<'a, K, V, C>
+impl<'a, K, V, C, Q> MapCursor<'a, K, V, C, Q>
 where
-    K: Copy + fmt::Display,
+    K: Copy + fmt::Display + Borrow<Q>,
+    Q: ?Sized,
     V: Copy + fmt::Display,
-    C: Comparator<K>,
+    C: Comparator<K, Q>,
 {
     fn verify(&self) {
         self.path.verify(self.pool);
@@ -448,7 +473,7 @@ mod tests {
         assert!(m.is_empty());
         m.clear(&mut f);
 
-        assert_eq!(m.get(7, &f, &()), None);
+        assert_eq!(m.get(&7, &f, &()), None);
         assert_eq!(m.iter(&f).next(), None);
         assert_eq!(m.get_or_less(7, &f, &()), None);
         m.retain(&mut f, |_, _| unreachable!());
@@ -495,15 +520,15 @@ mod tests {
             ]
         );
 
-        assert_eq!(m.get(0, f, &()), None);
-        assert_eq!(m.get(20, f, &()), Some(2.0));
-        assert_eq!(m.get(30, f, &()), None);
-        assert_eq!(m.get(40, f, &()), Some(4.0));
-        assert_eq!(m.get(50, f, &()), Some(5.5));
-        assert_eq!(m.get(60, f, &()), Some(6.0));
-        assert_eq!(m.get(70, f, &()), None);
-        assert_eq!(m.get(80, f, &()), Some(8.0));
-        assert_eq!(m.get(100, f, &()), None);
+        assert_eq!(m.get(&0, f, &()), None);
+        assert_eq!(m.get(&20, f, &()), Some(2.0));
+        assert_eq!(m.get(&30, f, &()), None);
+        assert_eq!(m.get(&40, f, &()), Some(4.0));
+        assert_eq!(m.get(&50, f, &()), Some(5.5));
+        assert_eq!(m.get(&60, f, &()), Some(6.0));
+        assert_eq!(m.get(&70, f, &()), None);
+        assert_eq!(m.get(&80, f, &()), Some(8.0));
+        assert_eq!(m.get(&100, f, &()), None);
 
         assert_eq!(m.get_or_less(0, f, &()), None);
         assert_eq!(m.get_or_less(20, f, &()), Some((20, 2.0)));
@@ -525,21 +550,21 @@ mod tests {
         }
 
         // Test some removals where the node stays healthy.
-        assert_eq!(m.tpath(50, f, &()), "node0[2]");
-        assert_eq!(m.tpath(80, f, &()), "node0[4]");
-        assert_eq!(m.tpath(200, f, &()), "node0[6]");
+        assert_eq!(m.tpath(&50, f, &()), "node0[2]");
+        assert_eq!(m.tpath(&80, f, &()), "node0[4]");
+        assert_eq!(m.tpath(&200, f, &()), "node0[6]");
 
         assert_eq!(m.remove(80, f, &()), Some(8.0));
-        assert_eq!(m.tpath(50, f, &()), "node0[2]");
-        assert_eq!(m.tpath(80, f, &()), "node0[4]");
-        assert_eq!(m.tpath(200, f, &()), "node0[5]");
+        assert_eq!(m.tpath(&50, f, &()), "node0[2]");
+        assert_eq!(m.tpath(&80, f, &()), "node0[4]");
+        assert_eq!(m.tpath(&200, f, &()), "node0[5]");
         assert_eq!(m.remove(80, f, &()), None);
         m.verify(f, &());
 
         assert_eq!(m.remove(20, f, &()), Some(2.0));
-        assert_eq!(m.tpath(50, f, &()), "node0[1]");
-        assert_eq!(m.tpath(80, f, &()), "node0[3]");
-        assert_eq!(m.tpath(200, f, &()), "node0[4]");
+        assert_eq!(m.tpath(&50, f, &()), "node0[1]");
+        assert_eq!(m.tpath(&80, f, &()), "node0[3]");
+        assert_eq!(m.tpath(&200, f, &()), "node0[4]");
         assert_eq!(m.remove(20, f, &()), None);
         m.verify(f, &());
 
@@ -588,7 +613,7 @@ mod tests {
         let mut m = full_leaf(f);
         m.insert(5, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(5, f, &()), Some(4.2));
+        assert_eq!(m.get(&5, f, &()), Some(4.2));
 
         // Retain even entries, with altered values.
         m.retain(f, |k, v| {
@@ -604,19 +629,19 @@ mod tests {
         let mut m = full_leaf(f);
         m.insert(80, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(80, f, &()), Some(4.2));
+        assert_eq!(m.get(&80, f, &()), Some(4.2));
 
         // Insert before middle (40).
         let mut m = full_leaf(f);
         m.insert(35, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(35, f, &()), Some(4.2));
+        assert_eq!(m.get(&35, f, &()), Some(4.2));
 
         // Insert after middle (40).
         let mut m = full_leaf(f);
         m.insert(45, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(45, f, &()), Some(4.2));
+        assert_eq!(m.get(&45, f, &()), Some(4.2));
 
         m.clear(f);
         assert!(m.is_empty());
@@ -658,13 +683,13 @@ mod tests {
         let mut m = full(f);
         // Verify geometry. Get get node2 as the root and leaves node0, 1, 3, ...
         m.verify(f, &());
-        assert_eq!(m.tpath(110, f, &()), "node2[0]--node0[0]");
-        assert_eq!(m.tpath(140, f, &()), "node2[0]--node0[3]");
-        assert_eq!(m.tpath(210, f, &()), "node2[1]--node1[0]");
-        assert_eq!(m.tpath(270, f, &()), "node2[1]--node1[6]");
-        assert_eq!(m.tpath(310, f, &()), "node2[2]--node3[0]");
-        assert_eq!(m.tpath(810, f, &()), "node2[7]--node8[0]");
-        assert_eq!(m.tpath(870, f, &()), "node2[7]--node8[6]");
+        assert_eq!(m.tpath(&110, f, &()), "node2[0]--node0[0]");
+        assert_eq!(m.tpath(&140, f, &()), "node2[0]--node0[3]");
+        assert_eq!(m.tpath(&210, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&270, f, &()), "node2[1]--node1[6]");
+        assert_eq!(m.tpath(&310, f, &()), "node2[2]--node3[0]");
+        assert_eq!(m.tpath(&810, f, &()), "node2[7]--node8[0]");
+        assert_eq!(m.tpath(&870, f, &()), "node2[7]--node8[6]");
 
         {
             let mut c = m.cursor(f, &());
@@ -675,77 +700,77 @@ mod tests {
         // Front of first leaf.
         m.insert(0, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(0, f, &()), Some(4.2));
+        assert_eq!(m.get(&0, f, &()), Some(4.2));
 
         // First leaf split 4-4 after appending to LHS.
         f.clear();
         m = full(f);
         m.insert(135, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(135, f, &()), Some(4.2));
+        assert_eq!(m.get(&135, f, &()), Some(4.2));
 
         // First leaf split 4-4 after prepending to RHS.
         f.clear();
         m = full(f);
         m.insert(145, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(145, f, &()), Some(4.2));
+        assert_eq!(m.get(&145, f, &()), Some(4.2));
 
         // First leaf split 4-4 after appending to RHS.
         f.clear();
         m = full(f);
         m.insert(175, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(175, f, &()), Some(4.2));
+        assert_eq!(m.get(&175, f, &()), Some(4.2));
 
         // Left-middle leaf split, ins LHS.
         f.clear();
         m = full(f);
         m.insert(435, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(435, f, &()), Some(4.2));
+        assert_eq!(m.get(&435, f, &()), Some(4.2));
 
         // Left-middle leaf split, ins RHS.
         f.clear();
         m = full(f);
         m.insert(445, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(445, f, &()), Some(4.2));
+        assert_eq!(m.get(&445, f, &()), Some(4.2));
 
         // Right-middle leaf split, ins LHS.
         f.clear();
         m = full(f);
         m.insert(535, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(535, f, &()), Some(4.2));
+        assert_eq!(m.get(&535, f, &()), Some(4.2));
 
         // Right-middle leaf split, ins RHS.
         f.clear();
         m = full(f);
         m.insert(545, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(545, f, &()), Some(4.2));
+        assert_eq!(m.get(&545, f, &()), Some(4.2));
 
         // Last leaf split, ins LHS.
         f.clear();
         m = full(f);
         m.insert(835, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(835, f, &()), Some(4.2));
+        assert_eq!(m.get(&835, f, &()), Some(4.2));
 
         // Last leaf split, ins RHS.
         f.clear();
         m = full(f);
         m.insert(845, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(845, f, &()), Some(4.2));
+        assert_eq!(m.get(&845, f, &()), Some(4.2));
 
         // Front of last leaf.
         f.clear();
         m = full(f);
         m.insert(805, 4.2, f, &());
         m.verify(f, &());
-        assert_eq!(m.get(805, f, &()), Some(4.2));
+        assert_eq!(m.get(&805, f, &()), Some(4.2));
 
         m.clear(f);
         m.verify(f, &());
@@ -769,19 +794,19 @@ mod tests {
 
         // Verify geometry.
         m.verify(f, &());
-        assert_eq!(m.tpath(10, f, &()), "node2[0]--node0[0]");
-        assert_eq!(m.tpath(40, f, &()), "node2[0]--node0[3]");
-        assert_eq!(m.tpath(49, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(50, f, &()), "node2[1]--node1[0]");
-        assert_eq!(m.tpath(80, f, &()), "node2[1]--node1[3]");
+        assert_eq!(m.tpath(&10, f, &()), "node2[0]--node0[0]");
+        assert_eq!(m.tpath(&40, f, &()), "node2[0]--node0[3]");
+        assert_eq!(m.tpath(&49, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&50, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&80, f, &()), "node2[1]--node1[3]");
 
         // Remove the front entry from a node that stays healthy.
         assert_eq!(m.insert(55, 5.5, f, &()), None);
         assert_eq!(m.remove(50, f, &()), Some(5.0));
         m.verify(f, &());
-        assert_eq!(m.tpath(49, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(50, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(55, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&49, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&50, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&55, f, &()), "node2[1]--node1[0]");
 
         // Remove the front entry from the first leaf node: No critical key to update.
         assert_eq!(m.insert(15, 1.5, f, &()), None);
@@ -794,8 +819,8 @@ mod tests {
         // No rebalancing for the right-most node. Still need critical key update.
         assert_eq!(m.remove(55, f, &()), Some(5.5));
         m.verify(f, &());
-        assert_eq!(m.tpath(55, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(60, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&55, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&60, f, &()), "node2[1]--node1[0]");
 
         // [ 15 20 30 40 ] [ 60 70 80 ]
 
@@ -803,8 +828,8 @@ mod tests {
         assert_eq!(m.insert(90, 9.0, f, &()), None);
         assert_eq!(m.insert(100, 10.0, f, &()), None);
         m.verify(f, &());
-        assert_eq!(m.tpath(55, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(60, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&55, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&60, f, &()), "node2[1]--node1[0]");
 
         // [ 15 20 30 40 ] [ 60 70 80 90 100 ]
 
@@ -815,9 +840,9 @@ mod tests {
 
         // [ 15 30 40 60 ] [ 70 80 90 100 ]
         // Check that the critical key was updated correctly.
-        assert_eq!(m.tpath(50, f, &()), "node2[0]--node0[3]");
-        assert_eq!(m.tpath(60, f, &()), "node2[0]--node0[3]");
-        assert_eq!(m.tpath(70, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&50, f, &()), "node2[0]--node0[3]");
+        assert_eq!(m.tpath(&60, f, &()), "node2[0]--node0[3]");
+        assert_eq!(m.tpath(&70, f, &()), "node2[1]--node1[0]");
 
         // Remove front entry from the left-most leaf node, underflowing.
         // This should cause two leaf nodes to be merged and the root node to go away.
@@ -839,8 +864,8 @@ mod tests {
         m.verify(f, &());
 
         // [ 10 20 30 40 ] [ 70 ]
-        assert_eq!(m.tpath(50, f, &()), "node2[0]--node0[4]");
-        assert_eq!(m.tpath(70, f, &()), "node2[1]--node1[0]");
+        assert_eq!(m.tpath(&50, f, &()), "node2[0]--node0[4]");
+        assert_eq!(m.tpath(&70, f, &()), "node2[1]--node1[0]");
 
         // Removing the last entry from the right leaf should cause a collapse.
         assert_eq!(m.remove(70, f, &()), Some(7.0));
@@ -868,25 +893,25 @@ mod tests {
         // Root: node11
         // [ node2 170 node10 330 node16 490 node21 650 node26 810 node31 970 node36 1130 node41 ]
         // L1: node11
-        assert_eq!(m.tpath(0, f, &()), "node11[0]--node2[0]--node0[0]");
-        assert_eq!(m.tpath(10000, f, &()), "node11[7]--node41[4]--node40[4]");
+        assert_eq!(m.tpath(&0, f, &()), "node11[0]--node2[0]--node0[0]");
+        assert_eq!(m.tpath(&10000, f, &()), "node11[7]--node41[4]--node40[4]");
 
         // 650 is a critical key in the middle of the root.
-        assert_eq!(m.tpath(640, f, &()), "node11[3]--node21[3]--node19[3]");
-        assert_eq!(m.tpath(650, f, &()), "node11[4]--node26[0]--node20[0]");
+        assert_eq!(m.tpath(&640, f, &()), "node11[3]--node21[3]--node19[3]");
+        assert_eq!(m.tpath(&650, f, &()), "node11[4]--node26[0]--node20[0]");
 
         // Deleting 640 triggers a rebalance from node19 to node 20, cascading to n21 -> n26.
         assert_eq!(m.remove(640, f, &()), Some(64.0));
         m.verify(f, &());
-        assert_eq!(m.tpath(650, f, &()), "node11[3]--node26[3]--node20[3]");
+        assert_eq!(m.tpath(&650, f, &()), "node11[3]--node26[3]--node20[3]");
 
         // 1130 is in the first leaf of the last L1 node. Deleting it triggers a rebalance node35
         // -> node37, but no rebalance above where there is no right sibling.
-        assert_eq!(m.tpath(1130, f, &()), "node11[6]--node41[0]--node35[0]");
-        assert_eq!(m.tpath(1140, f, &()), "node11[6]--node41[0]--node35[1]");
+        assert_eq!(m.tpath(&1130, f, &()), "node11[6]--node41[0]--node35[0]");
+        assert_eq!(m.tpath(&1140, f, &()), "node11[6]--node41[0]--node35[1]");
         assert_eq!(m.remove(1130, f, &()), Some(113.0));
         m.verify(f, &());
-        assert_eq!(m.tpath(1140, f, &()), "node11[6]--node41[0]--node37[0]");
+        assert_eq!(m.tpath(&1140, f, &()), "node11[6]--node41[0]--node37[0]");
     }
 
     #[test]
@@ -906,7 +931,7 @@ mod tests {
 
         x = 0;
         for n in 0..mm {
-            assert_eq!(m.get(x, f, &()), Some(n as f32));
+            assert_eq!(m.get(&x, f, &()), Some(n as f32));
             x = (x + n + 1) % mm;
         }
 
@@ -919,5 +944,22 @@ mod tests {
         }
 
         assert!(m.is_empty());
+    }
+
+    #[test]
+    fn get_borrow() {
+        let f = &mut MapForest::<&'static str, u32>::new();
+        let mut m = Map::<&'static str, u32>::new();
+
+        let ret = m.insert("cranelift", 0x42, f, &());
+        assert!(ret.is_none());
+
+        let key = String::from("wasm");
+        let ret = m.get(key.as_str(), f, &());
+        assert!(ret.is_none());
+
+        let key = String::from("cranelift");
+        let ret = m.get(key.as_str(), f, &());
+        assert_eq!(ret, Some(0x42));
     }
 }

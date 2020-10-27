@@ -6,6 +6,7 @@ use crate::packed_option::PackedOption;
 use alloc::string::String;
 #[cfg(test)]
 use core::fmt;
+use core::borrow::Borrow;
 use core::marker::PhantomData;
 
 /// Tag type defining forest types for a set.
@@ -91,7 +92,13 @@ where
     }
 
     /// Does the set contain `key`?.
-    pub fn contains<C: Comparator<K>>(&self, key: K, forest: &SetForest<K>, comp: &C) -> bool {
+    pub fn contains<Q, C>(&self, key: &Q, forest: &SetForest<K>, comp: &C)
+        -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         self.root
             .expand()
             .and_then(|root| Path::default().find(key, root, &forest.nodes, comp))
@@ -103,7 +110,7 @@ where
     /// If the set did not contain `key`, insert it and return true.
     ///
     /// If `key` is already present, don't change the set and return false.
-    pub fn insert<C: Comparator<K>>(
+    pub fn insert<C: Comparator<K, K>>(
         &mut self,
         key: K,
         forest: &mut SetForest<K>,
@@ -115,12 +122,18 @@ where
     /// Remove `key` from the set and return true.
     ///
     /// If `key` was not present in the set, return false.
-    pub fn remove<C: Comparator<K>>(
+    pub fn remove<Q, C>(
         &mut self,
-        key: K,
+        key: &Q,
         forest: &mut SetForest<K>,
         comp: &C,
-    ) -> bool {
+    )
+        -> bool
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         let mut c = self.cursor(forest, comp);
         if c.goto(key) {
             c.remove();
@@ -159,11 +172,17 @@ where
 
     /// Create a cursor for navigating this set. The cursor is initially positioned off the end of
     /// the set.
-    pub fn cursor<'a, C: Comparator<K>>(
+    pub fn cursor<'a, Q, C>(
         &'a mut self,
         forest: &'a mut SetForest<K>,
         comp: &'a C,
-    ) -> SetCursor<'a, K, C> {
+    )
+        -> SetCursor<'a, K, C, Q>
+    where
+        K: Borrow<Q>,
+        Q: ?Sized,
+        C: Comparator<K, Q>
+    {
         SetCursor::new(self, forest, comp)
     }
 
@@ -190,21 +209,24 @@ where
 ///
 /// A cursor always points at an element in the set, or "off the end" which is a position after the
 /// last element in the set.
-pub struct SetCursor<'a, K, C>
+pub struct SetCursor<'a, K, C, Q>
 where
-    K: 'a + Copy,
-    C: 'a + Comparator<K>,
+    K: 'a + Copy + Borrow<Q>,
+    Q: ?Sized,
+    C: 'a + Comparator<K, Q>,
 {
     root: &'a mut PackedOption<Node>,
     pool: &'a mut NodePool<SetTypes<K>>,
     comp: &'a C,
     path: Path<SetTypes<K>>,
+    _unused: PhantomData<Q>
 }
 
-impl<'a, K, C> SetCursor<'a, K, C>
+impl<'a, K, C, Q> SetCursor<'a, K, C, Q>
 where
-    K: Copy,
-    C: Comparator<K>,
+    K: Copy + Borrow<Q>,
+    Q: ?Sized,
+    C: Comparator<K, Q>,
 {
     /// Create a cursor with a default (invalid) location.
     fn new(container: &'a mut Set<K>, forest: &'a mut SetForest<K>, comp: &'a C) -> Self {
@@ -213,6 +235,7 @@ where
             pool: &mut forest.nodes,
             comp,
             path: Path::default(),
+            _unused: PhantomData
         }
     }
 
@@ -252,7 +275,7 @@ where
     ///
     /// If `elem` is not in the set, place the cursor at the next larger element (or the end) and
     /// return false.
-    pub fn goto(&mut self, elem: K) -> bool {
+    pub fn goto(&mut self, elem: &Q) -> bool {
         match self.root.expand() {
             None => false,
             Some(root) => {
@@ -287,7 +310,7 @@ where
             }
             Some(root) => {
                 // TODO: Optimize the case where `self.path` is already at the correct insert pos.
-                if self.path.find(elem, root, self.pool, self.comp).is_none() {
+                if self.path.find(elem.borrow(), root, self.pool, self.comp).is_none() {
                     *self.root = self.path.insert(elem, SetValue(), self.pool).into();
                     true
                 } else {
@@ -309,10 +332,11 @@ where
 }
 
 #[cfg(test)]
-impl<'a, K, C> SetCursor<'a, K, C>
+impl<'a, K, C, Q> SetCursor<'a, K, C, Q>
 where
-    K: Copy + fmt::Display,
-    C: Comparator<K>,
+    K: Copy + fmt::Display + Borrow<Q>,
+    Q: ?Sized,
+    C: Comparator<K, Q>,
 {
     fn verify(&self) {
         self.path.verify(self.pool);
@@ -375,7 +399,7 @@ mod tests {
         let mut s = Set::<u32>::new();
         assert!(s.is_empty());
         s.clear(&mut f);
-        assert!(!s.contains(7, &f, &()));
+        assert!(!s.contains(&7, &f, &()));
 
         // Iterator for an empty set.
         assert_eq!(s.iter(&f).next(), None);
@@ -419,7 +443,7 @@ mod tests {
         assert_eq!(c.prev(), None);
         assert_eq!(c.prev(), None);
 
-        assert!(c.goto(50));
+        assert!(c.goto(&50));
         assert_eq!(c.elem(), Some(50));
         assert_eq!(c.remove(), Some(50));
         c.verify();
@@ -460,7 +484,7 @@ mod tests {
         }
         assert_eq!(c.prev(), None);
 
-        assert!(c.goto(25));
+        assert!(c.goto(&25));
         for i in 25..50 {
             assert_eq!(c.remove(), Some(i));
             assert!(!c.is_empty());
@@ -494,7 +518,7 @@ mod tests {
         }
         assert!(!c.is_empty());
 
-        assert!(c.goto(0));
+        assert!(c.goto(&0));
         assert_eq!(c.tpath(), "node11[0]--node2[0]--node0[0]");
 
         assert_eq!(c.prev(), None);
@@ -507,7 +531,7 @@ mod tests {
         }
         assert_eq!(c.prev(), None);
 
-        assert!(c.goto(125));
+        assert!(c.goto(&125));
         for i in 125..150 {
             assert_eq!(c.remove(), Some(i));
             assert!(!c.is_empty());
@@ -561,9 +585,9 @@ mod tests {
 
         // Peel off a whole sub-tree of the root by deleting from the front.
         // The 900 element is near the front of the second sub-tree.
-        assert!(c.goto(900));
+        assert!(c.goto(&900));
         assert_eq!(c.tpath(), "node48[1]--node47[0]--node26[0]--node20[4]");
-        assert!(c.goto(0));
+        assert!(c.goto(&0));
         for i in 0..900 {
             assert!(!c.is_empty());
             assert_eq!(c.remove(), Some(i));
@@ -572,7 +596,7 @@ mod tests {
         assert_eq!(c.elem(), Some(900));
 
         // Delete backwards from somewhere in the middle.
-        assert!(c.goto(3000));
+        assert!(c.goto(&3000));
         for i in (2000..3000).rev() {
             assert_eq!(c.prev(), Some(i));
             assert_eq!(c.remove(), Some(i));
@@ -582,7 +606,7 @@ mod tests {
 
         // Remove everything in a scattered manner, triggering many collapsing patterns.
         for i in 0..4000 {
-            if c.goto((i * 7) % 4000) {
+            if c.goto(&((i * 7) % 4000)) {
                 c.remove();
             }
         }
